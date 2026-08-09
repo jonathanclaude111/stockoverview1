@@ -34,6 +34,12 @@ def get_claude_client():
         return None
     return anthropic.Anthropic(api_key=api_key)
 
+
+def extract_text(response) -> str:
+    """Haalt de tekst uit een Claude-antwoord, ongeacht of er ook 'thinking'-blokken voor staan."""
+    parts = [block.text for block in response.content if getattr(block, "type", None) == "text"]
+    return "\n".join(parts) if parts else "⚠️ Geen tekstantwoord ontvangen van Claude."
+
 DEFAULT_TICKERS = [
     "NVDA", "MU", "GOOGL", "TSLA", "MSFT", "AVGO", "META", "ARM", "QCOM", "AMD",
     "WDC", "AXTI", "APH", "ATEN", "ALAB", "APLD", "CIEN", "COHR", "CRDO", "DELL",
@@ -211,7 +217,7 @@ Houd het compact (max. ~250 woorden), gebruik korte alinea's met vetgedrukte tus
             max_tokens=1000,
             messages=[{"role": "user", "content": prompt}],
         )
-        return response.content[0].text
+        return extract_text(response)
     except Exception as e:
         return f"⚠️ Fout bij ophalen AI-analyse: {e}"
 
@@ -259,7 +265,7 @@ Aandelen:
             max_tokens=1200,
             messages=[{"role": "user", "content": prompt}],
         )
-        return response.content[0].text
+        return extract_text(response)
     except Exception as e:
         return f"⚠️ Fout bij ophalen AI-analyse: {e}"
 
