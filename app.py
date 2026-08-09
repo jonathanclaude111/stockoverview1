@@ -1,14 +1,14 @@
 """
-AI-Aandelen Dashboard
-----------------------
-Streamlit-app die fundamentele data ophaalt via yfinance (Yahoo Finance),
-zonder dat er een API-key nodig is.
+AI Stock Dashboard
+--------------------
+Streamlit app that pulls fundamental data via yfinance (Yahoo Finance),
+no API key required for the market data itself.
 
-Lokaal draaien:
+Run locally:
     pip install -r requirements.txt
     streamlit run app.py
 
-Hosten: push deze map naar een GitHub-repository en koppel die aan
+Hosting: push this folder to a GitHub repository and connect it to
 Streamlit Community Cloud (share.streamlit.io).
 """
 
@@ -21,14 +21,14 @@ import anthropic
 import json
 import os
 
-st.set_page_config(page_title="AI-Aandelen Dashboard", layout="wide")
+st.set_page_config(page_title="AI Stock Dashboard", layout="wide")
 
 CLAUDE_MODEL = "claude-sonnet-5"
 TICKERS_FILE = os.path.join(os.path.dirname(__file__), "tickers.json")
 
 
 def get_claude_client():
-    """Geeft een Anthropic-client terug, of None als er geen API-key is ingesteld."""
+    """Returns an Anthropic client, or None if no API key is configured."""
     api_key = st.secrets.get("ANTHROPIC_API_KEY")
     if not api_key:
         return None
@@ -36,16 +36,17 @@ def get_claude_client():
 
 
 def extract_text(response) -> str:
-    """Haalt de tekst uit een Claude-antwoord, ongeacht of er ook 'thinking'-blokken voor staan."""
+    """Extracts the text from a Claude response, regardless of any 'thinking' blocks before it."""
     parts = [block.text for block in response.content if getattr(block, "type", None) == "text"]
     if parts:
         return "\n".join(parts)
-    block_types = [getattr(b, "type", "onbekend") for b in response.content]
+    block_types = [getattr(b, "type", "unknown") for b in response.content]
     return (
-        "⚠️ Geen tekstantwoord ontvangen van Claude. "
-        f"(stop_reason: {getattr(response, 'stop_reason', 'n.b.')}, blokken: {block_types}). "
-        "Mogelijk was max_tokens te laag — probeer het opnieuw."
+        "⚠️ No text response received from Claude. "
+        f"(stop_reason: {getattr(response, 'stop_reason', 'n/a')}, blocks: {block_types}). "
+        "max_tokens may have been too low — try again."
     )
+
 
 DEFAULT_TICKERS = [
     "NVDA", "MU", "GOOGL", "TSLA", "MSFT", "AVGO", "META", "ARM", "QCOM", "AMD",
@@ -57,7 +58,7 @@ DEFAULT_TICKERS = [
 
 
 def load_tickers() -> list[str]:
-    """Leest de tickerlijst van schijf, of geeft de standaardlijst terug als er nog geen bestand is."""
+    """Reads the ticker list from disk, or returns the default list if no file exists yet."""
     try:
         if os.path.exists(TICKERS_FILE):
             with open(TICKERS_FILE, "r") as f:
@@ -70,21 +71,21 @@ def load_tickers() -> list[str]:
 
 
 def save_tickers(tickers: list[str]) -> None:
-    """Schrijft de tickerlijst weg naar schijf zodat ze bewaard blijft na herladen."""
+    """Writes the ticker list to disk so it persists across reloads."""
     try:
         with open(TICKERS_FILE, "w") as f:
             json.dump(tickers, f)
     except Exception as e:
-        st.warning(f"Kon tickerlijst niet opslaan: {e}")
+        st.warning(f"Could not save ticker list: {e}")
 
 
-CACHE_TTL = 15 * 60  # 15 minuten
+CACHE_TTL = 15 * 60  # 15 minutes
 
 
 def fmt_num(x, prefix="", suffix="", decimals=2):
-    """Formatteer een getal netjes, of geef 'n.b.' terug als het ontbreekt."""
+    """Formats a number nicely, or returns 'n/a' if it's missing."""
     if x is None or (isinstance(x, float) and np.isnan(x)):
-        return "n.b."
+        return "n/a"
     try:
         if abs(x) >= 1e12:
             return f"{prefix}{x/1e12:.{decimals}f}T{suffix}"
@@ -94,12 +95,12 @@ def fmt_num(x, prefix="", suffix="", decimals=2):
             return f"{prefix}{x/1e6:.{decimals}f}M{suffix}"
         return f"{prefix}{x:,.{decimals}f}{suffix}"
     except Exception:
-        return "n.b."
+        return "n/a"
 
 
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
 def get_stock_info(ticker: str) -> dict:
-    """Haalt alle relevante velden op voor één ticker. Faalt stil per veld."""
+    """Fetches all relevant fields for one ticker. Fails silently per-field."""
     data = {"ticker": ticker}
     try:
         t = yf.Ticker(ticker)
@@ -108,9 +109,9 @@ def get_stock_info(ticker: str) -> dict:
         info = {}
 
     data["name"] = info.get("longName") or info.get("shortName") or ticker
-    data["sector"] = info.get("sector", "n.b.")
-    data["industry"] = info.get("industry", "n.b.")
-    data["summary"] = info.get("longBusinessSummary", "Geen beschrijving beschikbaar.")
+    data["sector"] = info.get("sector", "n/a")
+    data["industry"] = info.get("industry", "n/a")
+    data["summary"] = info.get("longBusinessSummary", "No description available.")
 
     data["price"] = info.get("currentPrice") or info.get("regularMarketPrice")
     data["currency"] = info.get("currency", "")
@@ -126,10 +127,10 @@ def get_stock_info(ticker: str) -> dict:
     data["target_mean"] = info.get("targetMeanPrice")
     data["target_low"] = info.get("targetLowPrice")
     data["target_high"] = info.get("targetHighPrice")
-    data["recommendation"] = info.get("recommendationKey", "n.b.")
+    data["recommendation"] = info.get("recommendationKey", "n/a")
     data["num_analysts"] = info.get("numberOfAnalystOpinions")
 
-    # Free Cash Flow (TTM) — via cashflow-statement
+    # Free Cash Flow (TTM) — from the cash flow statement
     fcf = None
     try:
         cf = t.cashflow
@@ -142,7 +143,7 @@ def get_stock_info(ticker: str) -> dict:
         pass
     data["fcf_ttm"] = fcf
 
-    # Insider transacties (laatste paar)
+    # Insider transactions (most recent few)
     insiders = None
     try:
         ins = t.insider_transactions
@@ -152,7 +153,7 @@ def get_stock_info(ticker: str) -> dict:
         pass
     data["insider_transactions"] = insiders
 
-    # YTD-rendement
+    # YTD return
     ytd_return = None
     try:
         hist = t.history(period="ytd")
@@ -189,52 +190,53 @@ def get_correlation_matrix(tickers: list[str]) -> pd.DataFrame:
 
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
 def get_claude_analysis(ticker: str, snapshot: dict) -> str:
-    """Vraagt Claude om de cijfers te interpreteren en een koopwaardigheids-inschatting te geven.
-    snapshot bevat enkel de kale cijfers (geen DataFrames) zodat het cachebaar/serialiseerbaar is."""
+    """Asks Claude to interpret the numbers and give a buy-worthiness assessment.
+    snapshot contains only plain values (no DataFrames) so it's cacheable/serializable."""
     client = get_claude_client()
     if client is None:
-        return "⚠️ Geen ANTHROPIC_API_KEY ingesteld — zie instructies in de README."
+        return "⚠️ No ANTHROPIC_API_KEY configured — see instructions in the README."
 
-    prompt = f"""Je bent een nuchtere, kritische aandelenanalist. Hieronder staan de actuele
-fundamentele cijfers van {snapshot.get('name')} ({ticker}). Geef een korte, concrete analyse in het Nederlands:
+    prompt = f"""You are a level-headed, critical stock analyst. Below are the current
+fundamental figures for {snapshot.get('name')} ({ticker}). Give a short, concrete analysis in English:
 
-1. Interpretatie van de cijfers (waardering, groei, gezondheid) — 3-4 zinnen
-2. Argumenten die pleiten voor ondergewaardeerd zijn
-3. Argumenten die pleiten voor overgewaardeerd zijn
-4. Een voorzichtige inschatting van een aantrekkelijk instapniveau (prijs of multiple), met duidelijke
-   vermelding dat dit geen financieel advies is, enkel een educatieve inschatting op basis van de cijfers
+1. Interpretation of the figures (valuation, growth, health) — 3-4 sentences
+2. Arguments suggesting the stock is undervalued
+3. Arguments suggesting the stock is overvalued
+4. A cautious estimate of an attractive entry level (price or multiple), with a clear note
+   that this is not financial advice, just an educational estimate based on the figures
 
-Cijfers:
-- Koers: {snapshot.get('price')} {snapshot.get('currency')}
-- Marktkap: {snapshot.get('market_cap')}
+Figures:
+- Price: {snapshot.get('price')} {snapshot.get('currency')}
+- Market cap: {snapshot.get('market_cap')}
 - P/E trailing: {snapshot.get('pe_trailing')} — P/E forward: {snapshot.get('pe_forward')}
-- PEG-ratio: {snapshot.get('peg_ratio')}
+- PEG ratio: {snapshot.get('peg_ratio')}
 - FCF (TTM): {snapshot.get('fcf_ttm')}
-- 52-weekbereik: {snapshot.get('52w_low')} - {snapshot.get('52w_high')}
-- YTD-rendement: {snapshot.get('ytd_return')}%
-- Analisten koersdoel gemiddeld/laag/hoog: {snapshot.get('target_mean')} / {snapshot.get('target_low')} / {snapshot.get('target_high')}
-- Analisten rating: {snapshot.get('recommendation')} (obv {snapshot.get('num_analysts')} analisten)
-- Sector: {snapshot.get('sector')} — Industrie: {snapshot.get('industry')}
+- 52-week range: {snapshot.get('52w_low')} - {snapshot.get('52w_high')}
+- YTD return: {snapshot.get('ytd_return')}%
+- Analyst target price avg/low/high: {snapshot.get('target_mean')} / {snapshot.get('target_low')} / {snapshot.get('target_high')}
+- Analyst rating: {snapshot.get('recommendation')} (based on {snapshot.get('num_analysts')} analysts)
+- Sector: {snapshot.get('sector')} — Industry: {snapshot.get('industry')}
 
-Houd het compact (max. ~250 woorden), gebruik korte alinea's met vetgedrukte tussenkopjes."""
+Keep it compact (max ~250 words), use short paragraphs with bold subheadings."""
 
     try:
         response = client.messages.create(
             model=CLAUDE_MODEL,
-            max_tokens=3000,
+            max_tokens=4096,
+            thinking={"type": "disabled"},
             messages=[{"role": "user", "content": prompt}],
         )
         return extract_text(response)
     except Exception as e:
-        return f"⚠️ Fout bij ophalen AI-analyse: {e}"
+        return f"⚠️ Error retrieving AI analysis: {e}"
 
 
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
 def get_top_picks(strong_buy_rows: list[dict]) -> str:
-    """Vraagt Claude om, gegeven enkel de Strong Buy-aandelen, de 3 interessantste te kiezen."""
+    """Asks Claude to pick the 3 most interesting stocks among the Strong Buy-rated ones."""
     client = get_claude_client()
     if client is None:
-        return "⚠️ Geen ANTHROPIC_API_KEY ingesteld — zie instructies in de README."
+        return "⚠️ No ANTHROPIC_API_KEY configured — see instructions in the README."
 
     lines = []
     for r in strong_buy_rows:
@@ -245,36 +247,37 @@ def get_top_picks(strong_buy_rows: list[dict]) -> str:
             except Exception:
                 upside = None
         lines.append(
-            f"- {r['ticker']} ({r['name']}): koers {r.get('price')}, "
+            f"- {r['ticker']} ({r['name']}): price {r.get('price')}, "
             f"P/E trailing {r.get('pe_trailing')}, P/E forward {r.get('pe_forward')}, "
             f"PEG {r.get('peg_ratio')}, FCF TTM {r.get('fcf_ttm')}, YTD {r.get('ytd_return')}%, "
-            f"koersdoel gem. {r.get('target_mean')} (upside ~{upside:.0f}% indien gekend)"
+            f"avg target price {r.get('target_mean')} (upside ~{upside:.0f}% if known)"
         )
     stock_list_text = "\n".join(lines)
 
-    prompt = f"""Je bent een kritische, nuchtere aandelenanalist. Hieronder staan ALLE aandelen uit
-mijn watchlist die momenteel een 'Strong Buy'-rating van analisten hebben. Kies hieruit de 3
-interessantste om NU in te stappen, en leg uit waarom.
+    prompt = f"""You are a critical, level-headed stock analyst. Below are ALL stocks from my
+watchlist that currently have a 'Strong Buy' rating from analysts. Pick the 3 most interesting
+ones to buy RIGHT NOW, and explain why.
 
-Belangrijk:
-- Wees kritisch: negeer of markeer expliciet aandelen met negatieve winst/FCF, extreme P/E's,
-  of onrealistische koersdoelen als (te) speculatief
-- Verkies een goede balans tussen waardering (lage PEG/forward P/E), sterke FCF, en upside-potentieel
-- Vermeld expliciet dat dit een educatieve, cijfermatige interpretatie is, geen financieel advies
-- Antwoord in het Nederlands, compact, met voor elke top-3 keuze een korte onderbouwing (2-3 zinnen)
+Important:
+- Be critical: ignore or explicitly flag stocks with negative earnings/FCF, extreme P/E's,
+  or unrealistic price targets as (too) speculative
+- Favor a good balance between valuation (low PEG/forward P/E), strong FCF, and upside potential
+- Explicitly state that this is an educational, numbers-based interpretation, not financial advice
+- Answer in English, compact, with a short rationale (2-3 sentences) for each of the top 3 picks
 
-Aandelen:
+Stocks:
 {stock_list_text}"""
 
     try:
         response = client.messages.create(
             model=CLAUDE_MODEL,
-            max_tokens=3000,
+            max_tokens=4096,
+            thinking={"type": "disabled"},
             messages=[{"role": "user", "content": prompt}],
         )
         return extract_text(response)
     except Exception as e:
-        return f"⚠️ Fout bij ophalen AI-analyse: {e}"
+        return f"⚠️ Error retrieving AI analysis: {e}"
 
 
 def rating_badge(rec: str) -> str:
@@ -284,163 +287,170 @@ def rating_badge(rec: str) -> str:
         "hold": "🟡 Hold",
         "underperform": "🔴 Underperform",
         "sell": "🔴 Sell",
-        "none": "n.b.",
+        "none": "n/a",
     }
-    return mapping.get((rec or "").lower(), rec or "n.b.")
+    return mapping.get((rec or "").lower(), rec or "n/a")
 
 
-# ----------------------- Ticker-beheer (sidebar) -----------------------
+# ----------------------- Ticker management (sidebar) -----------------------
 
 if "tickers" not in st.session_state:
     st.session_state.tickers = load_tickers()
 
 with st.sidebar:
-    st.header("⚙️ Aandelenlijst beheren")
+    st.header("⚙️ Manage stock list")
 
-    new_ticker = st.text_input("Ticker toevoegen (bv. NFLX)", key="new_ticker_input").strip().upper()
-    if st.button("➕ Toevoegen"):
+    new_ticker = st.text_input("Add ticker (e.g. NFLX)", key="new_ticker_input").strip().upper()
+    if st.button("➕ Add"):
         if not new_ticker:
-            st.warning("Vul eerst een ticker in.")
+            st.warning("Please enter a ticker first.")
         elif new_ticker in st.session_state.tickers:
-            st.warning(f"{new_ticker} staat al in de lijst.")
+            st.warning(f"{new_ticker} is already in the list.")
         else:
             st.session_state.tickers.append(new_ticker)
             save_tickers(st.session_state.tickers)
-            st.success(f"{new_ticker} toegevoegd en opgeslagen.")
+            st.success(f"{new_ticker} added and saved.")
             st.rerun()
 
     st.markdown("---")
-    to_remove = st.multiselect("Tickers verwijderen", options=st.session_state.tickers)
-    if st.button("🗑️ Verwijder geselecteerde") and to_remove:
+    to_remove = st.multiselect("Remove tickers", options=st.session_state.tickers)
+    if st.button("🗑️ Remove selected") and to_remove:
         st.session_state.tickers = [t for t in st.session_state.tickers if t not in to_remove]
         save_tickers(st.session_state.tickers)
-        st.success(f"Verwijderd en opgeslagen: {', '.join(to_remove)}")
+        st.success(f"Removed and saved: {', '.join(to_remove)}")
         st.rerun()
 
     st.markdown("---")
-    if st.button("↩️ Reset naar standaardlijst"):
+    if st.button("↩️ Reset to default list"):
         st.session_state.tickers = DEFAULT_TICKERS.copy()
         save_tickers(st.session_state.tickers)
         st.rerun()
 
     st.caption(
-        f"Huidige lijst: {len(st.session_state.tickers)} aandelen. Wijzigingen blijven bewaard "
-        "na herladen, maar kunnen resetten na een herstart van de app op Streamlit Cloud. "
-        "⚠️ Nieuwe tickers worden niet gevalideerd vooraf — als de ticker niet bestaat op "
-        "Yahoo Finance, zie je 'n.b.' in de tabel in plaats van een foutmelding."
+        f"Current list: {len(st.session_state.tickers)} stocks. Changes persist "
+        "after reloading, but may reset after the app restarts on Streamlit Cloud. "
+        "⚠️ New tickers are not validated upfront — if the ticker doesn't exist on "
+        "Yahoo Finance, you'll see 'n/a' in the table instead of an error."
     )
 
 TICKERS = st.session_state.tickers
 
 # ----------------------- UI -----------------------
 
-st.title("📊 AI-Aandelen Dashboard")
+st.title("📊 AI Stock Dashboard")
 st.caption(
-    f"Data via Yahoo Finance (yfinance) — laatst opgehaald rond "
-    f"{datetime.now().strftime('%d/%m/%Y %H:%M')}. Koersen kunnen ~15 min vertraagd zijn."
+    f"Data via Yahoo Finance (yfinance) — last fetched around "
+    f"{datetime.now().strftime('%Y-%m-%d %H:%M')}. Prices may be delayed ~15 min."
 )
 
-tab_overview, tab_detail, tab_corr = st.tabs(["📋 Overzicht", "🔍 Detail per aandeel", "🔗 Correlatie"])
+tab_overview, tab_detail, tab_corr = st.tabs(["📋 Overview", "🔍 Stock detail", "🔗 Correlation"])
 
-with st.spinner("Data ophalen voor alle aandelen... (kan even duren bij eerste keer)"):
+with st.spinner("Fetching data for all stocks... (may take a moment on first load)"):
     df = get_all_stocks(TICKERS)
 
 with tab_overview:
-    st.subheader("Overzichtstabel")
+    st.subheader("Overview table")
     display_df = df.copy()
-    display_df["Koers"] = display_df.apply(lambda r: fmt_num(r["price"], suffix=f" {r['currency']}"), axis=1)
-    display_df["Marktkap"] = display_df["market_cap"].apply(fmt_num)
+    display_df["Price"] = display_df.apply(lambda r: fmt_num(r["price"], suffix=f" {r['currency']}"), axis=1)
+    display_df["Market Cap"] = display_df["market_cap"].apply(fmt_num)
     display_df["P/E (trailing)"] = display_df["pe_trailing"].apply(lambda x: fmt_num(x))
     display_df["P/E (forward)"] = display_df["pe_forward"].apply(lambda x: fmt_num(x))
     display_df["PEG"] = display_df["peg_ratio"].apply(lambda x: fmt_num(x))
     display_df["FCF (TTM)"] = display_df["fcf_ttm"].apply(fmt_num)
     display_df["YTD %"] = display_df["ytd_return"].apply(lambda x: fmt_num(x, suffix="%"))
-    display_df["Koersdoel (gem.)"] = display_df["target_mean"].apply(fmt_num)
+    display_df["Avg. Target"] = display_df["target_mean"].apply(fmt_num)
     display_df["Rating"] = display_df["recommendation"].apply(rating_badge)
 
     cols_to_show = [
-        "ticker", "name", "Koers", "Marktkap", "P/E (trailing)", "P/E (forward)",
-        "PEG", "FCF (TTM)", "YTD %", "Koersdoel (gem.)", "Rating",
+        "ticker", "name", "Price", "Market Cap", "P/E (trailing)", "P/E (forward)",
+        "PEG", "FCF (TTM)", "YTD %", "Avg. Target", "Rating",
     ]
     st.dataframe(
-        display_df[cols_to_show].rename(columns={"ticker": "Ticker", "name": "Naam"}),
+        display_df[cols_to_show].rename(columns={"ticker": "Ticker", "name": "Name"}),
         use_container_width=True,
         hide_index=True,
         height=600,
     )
 
     st.markdown("---")
-    st.markdown("### 🏆 Top 3 Strong Buy-kandidaten")
+    st.markdown("### 🏆 Top 3 Strong Buy candidates")
     st.caption(
-        "Filtert alle aandelen met 'Strong Buy'-rating en vraagt Claude om de 3 interessantste "
-        "te selecteren op basis van waardering, FCF en upside. Geen financieel advies."
+        "Filters all stocks with a 'Strong Buy' rating and asks Claude to select the 3 most "
+        "interesting ones based on valuation, FCF, and upside. Not financial advice."
     )
-    if st.button("Genereer top 3"):
+    if st.button("Generate top 3"):
         strong_buy_df = df[df["recommendation"].str.lower() == "strong_buy"]
         if strong_buy_df.empty:
-            st.write("Geen aandelen met 'Strong Buy'-rating gevonden in de huidige data.")
+            st.write("No stocks with a 'Strong Buy' rating found in the current data.")
         else:
             strong_buy_rows = strong_buy_df.drop(columns=["insider_transactions"], errors="ignore").to_dict("records")
-            with st.spinner(f"Claude analyseert {len(strong_buy_rows)} Strong Buy-aandelen..."):
+            with st.spinner(f"Claude is analyzing {len(strong_buy_rows)} Strong Buy stocks..."):
                 top_picks = get_top_picks(strong_buy_rows)
-            st.markdown(top_picks)
+            st.session_state["top_picks_text"] = top_picks
+
+    if "top_picks_text" in st.session_state:
+        st.markdown(st.session_state["top_picks_text"])
 
 with tab_detail:
-    st.subheader("Detail per aandeel")
-    ticker_choice = st.selectbox("Kies een aandeel", TICKERS)
+    st.subheader("Stock detail")
+    ticker_choice = st.selectbox("Choose a stock", TICKERS)
     d = get_stock_info(ticker_choice)
 
     col1, col2, col3 = st.columns(3)
-    col1.metric("Koers", fmt_num(d["price"], suffix=f" {d['currency']}"))
-    col2.metric("Marktkap", fmt_num(d["market_cap"]))
-    col3.metric("YTD-rendement", fmt_num(d["ytd_return"], suffix="%"))
+    col1.metric("Price", fmt_num(d["price"], suffix=f" {d['currency']}"))
+    col2.metric("Market Cap", fmt_num(d["market_cap"]))
+    col3.metric("YTD return", fmt_num(d["ytd_return"], suffix="%"))
 
     st.markdown(f"### {d['name']} ({d['ticker']})")
-    st.markdown(f"**Sector:** {d['sector']} — **Industrie:** {d['industry']}")
-    st.markdown("**Activiteit:**")
+    st.markdown(f"**Sector:** {d['sector']} — **Industry:** {d['industry']}")
+    st.markdown("**Business description:**")
     st.write(d["summary"])
 
     st.markdown("---")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("P/E trailing", fmt_num(d["pe_trailing"]))
     c2.metric("P/E forward", fmt_num(d["pe_forward"]))
-    c3.metric("PEG-ratio", fmt_num(d["peg_ratio"]))
+    c3.metric("PEG ratio", fmt_num(d["peg_ratio"]))
     c4.metric("FCF (TTM)", fmt_num(d["fcf_ttm"]))
 
     c5, c6 = st.columns(2)
-    c5.metric("52-weekbereik", f"{fmt_num(d['52w_low'])} — {fmt_num(d['52w_high'])}")
-    c6.metric("Rating analisten", rating_badge(d["recommendation"]))
+    c5.metric("52-week range", f"{fmt_num(d['52w_low'])} — {fmt_num(d['52w_high'])}")
+    c6.metric("Analyst rating", rating_badge(d["recommendation"]))
 
-    st.markdown("**Koersdoelen analisten:**")
+    st.markdown("**Analyst price targets:**")
     st.write(
-        f"Gemiddeld: {fmt_num(d['target_mean'])} — "
-        f"Laag: {fmt_num(d['target_low'])} — "
-        f"Hoog: {fmt_num(d['target_high'])} "
-        f"(gebaseerd op {d['num_analysts'] if d['num_analysts'] else 'n.b.'} analisten)"
+        f"Average: {fmt_num(d['target_mean'])} — "
+        f"Low: {fmt_num(d['target_low'])} — "
+        f"High: {fmt_num(d['target_high'])} "
+        f"(based on {d['num_analysts'] if d['num_analysts'] else 'n/a'} analysts)"
     )
 
-    st.markdown("**Recente insider-transacties:**")
+    st.markdown("**Recent insider transactions:**")
     if d["insider_transactions"] is not None and not d["insider_transactions"].empty:
         st.dataframe(d["insider_transactions"], use_container_width=True, hide_index=True)
     else:
-        st.write("Geen data beschikbaar.")
+        st.write("No data available.")
 
     st.markdown("---")
-    st.markdown("### 🤖 AI-interpretatie & koopwaardigheid")
+    st.markdown("### 🤖 AI interpretation & buy-worthiness")
     st.caption(
-        "Gegenereerd door Claude op basis van bovenstaande cijfers. "
-        "Dit is geen financieel advies, enkel een educatieve inschatting."
+        "Generated by Claude based on the figures above. "
+        "This is not financial advice, just an educational estimate."
     )
-    if st.button("Genereer AI-analyse", key=f"analyse_{ticker_choice}"):
-        # Enkel serialiseerbare kale waarden meegeven aan de cache-functie
+    if st.button("Generate AI analysis", key=f"analyse_{ticker_choice}"):
+        # Only pass plain, serializable values to the cache function
         snapshot = {k: v for k, v in d.items() if k != "insider_transactions"}
-        with st.spinner("Claude analyseert de cijfers..."):
+        with st.spinner("Claude is analyzing the figures..."):
             analysis = get_claude_analysis(ticker_choice, snapshot)
-        st.markdown(analysis)
+        st.session_state[f"analysis_text_{ticker_choice}"] = analysis
+
+    analysis_key = f"analysis_text_{ticker_choice}"
+    if analysis_key in st.session_state:
+        st.markdown(st.session_state[analysis_key])
 
 with tab_corr:
-    st.subheader("Onderlinge correlatie (obv 6 maanden dagelijkse rendementen)")
-    with st.spinner("Correlatiematrix berekenen..."):
+    st.subheader("Correlation (based on 6 months of daily returns)")
+    with st.spinner("Calculating correlation matrix..."):
         corr = get_correlation_matrix(TICKERS)
     if not corr.empty:
         st.dataframe(
@@ -449,10 +459,10 @@ with tab_corr:
             height=700,
         )
     else:
-        st.write("Kon correlatiematrix niet berekenen.")
+        st.write("Could not calculate the correlation matrix.")
 
 st.markdown("---")
 st.caption(
-    "⚠️ Deze data is louter informatief en vormt geen beleggingsadvies. "
-    "Sommige tickers uit de lijst worden mogelijk niet (correct) herkend door Yahoo Finance."
+    "⚠️ This data is for informational purposes only and does not constitute investment advice. "
+    "Some tickers in the list may not be (correctly) recognized by Yahoo Finance."
 )
