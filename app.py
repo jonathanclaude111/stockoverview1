@@ -38,7 +38,14 @@ def get_claude_client():
 def extract_text(response) -> str:
     """Haalt de tekst uit een Claude-antwoord, ongeacht of er ook 'thinking'-blokken voor staan."""
     parts = [block.text for block in response.content if getattr(block, "type", None) == "text"]
-    return "\n".join(parts) if parts else "⚠️ Geen tekstantwoord ontvangen van Claude."
+    if parts:
+        return "\n".join(parts)
+    block_types = [getattr(b, "type", "onbekend") for b in response.content]
+    return (
+        "⚠️ Geen tekstantwoord ontvangen van Claude. "
+        f"(stop_reason: {getattr(response, 'stop_reason', 'n.b.')}, blokken: {block_types}). "
+        "Mogelijk was max_tokens te laag — probeer het opnieuw."
+    )
 
 DEFAULT_TICKERS = [
     "NVDA", "MU", "GOOGL", "TSLA", "MSFT", "AVGO", "META", "ARM", "QCOM", "AMD",
@@ -214,7 +221,7 @@ Houd het compact (max. ~250 woorden), gebruik korte alinea's met vetgedrukte tus
     try:
         response = client.messages.create(
             model=CLAUDE_MODEL,
-            max_tokens=1000,
+            max_tokens=3000,
             messages=[{"role": "user", "content": prompt}],
         )
         return extract_text(response)
@@ -262,7 +269,7 @@ Aandelen:
     try:
         response = client.messages.create(
             model=CLAUDE_MODEL,
-            max_tokens=1200,
+            max_tokens=3000,
             messages=[{"role": "user", "content": prompt}],
         )
         return extract_text(response)
