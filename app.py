@@ -81,29 +81,6 @@ def save_tickers(tickers: list[str]) -> None:
 CACHE_TTL = 15 * 60  # 15 minuten
 
 
-@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
-def translate_to_english(text: str) -> str:
-    """Vertaalt gegeven tekst (Nederlands) naar het Engels via Claude, met behoud van opmaak."""
-    client = get_claude_client()
-    if client is None:
-        return "⚠️ Geen ANTHROPIC_API_KEY ingesteld."
-
-    prompt = (
-        "Translate the following Dutch text to natural, fluent English. "
-        "Keep the markdown formatting (headers, bold, bullet points) exactly as structured. "
-        "Return ONLY the translation, nothing else.\n\n" + text
-    )
-    try:
-        response = client.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=3000,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return extract_text(response)
-    except Exception as e:
-        return f"⚠️ Fout bij vertalen: {e}"
-
-
 def fmt_num(x, prefix="", suffix="", decimals=2):
     """Formatteer een getal netjes, of geef 'n.b.' terug als het ontbreekt."""
     if x is None or (isinstance(x, float) and np.isnan(x)):
@@ -406,15 +383,7 @@ with tab_overview:
             strong_buy_rows = strong_buy_df.drop(columns=["insider_transactions"], errors="ignore").to_dict("records")
             with st.spinner(f"Claude analyseert {len(strong_buy_rows)} Strong Buy-aandelen..."):
                 top_picks = get_top_picks(strong_buy_rows)
-            st.session_state["top_picks_text"] = top_picks
-
-    if "top_picks_text" in st.session_state:
-        st.markdown(st.session_state["top_picks_text"])
-        if st.button("🇬🇧 Vertaal naar Engels", key="translate_top_picks"):
-            with st.spinner("Vertalen..."):
-                translated = translate_to_english(st.session_state["top_picks_text"])
-            st.markdown("---")
-            st.markdown(translated)
+            st.markdown(top_picks)
 
 with tab_detail:
     st.subheader("Detail per aandeel")
@@ -467,16 +436,7 @@ with tab_detail:
         snapshot = {k: v for k, v in d.items() if k != "insider_transactions"}
         with st.spinner("Claude analyseert de cijfers..."):
             analysis = get_claude_analysis(ticker_choice, snapshot)
-        st.session_state[f"analysis_text_{ticker_choice}"] = analysis
-
-    analysis_key = f"analysis_text_{ticker_choice}"
-    if analysis_key in st.session_state:
-        st.markdown(st.session_state[analysis_key])
-        if st.button("🇬🇧 Vertaal naar Engels", key=f"translate_{ticker_choice}"):
-            with st.spinner("Vertalen..."):
-                translated = translate_to_english(st.session_state[analysis_key])
-            st.markdown("---")
-            st.markdown(translated)
+        st.markdown(analysis)
 
 with tab_corr:
     st.subheader("Onderlinge correlatie (obv 6 maanden dagelijkse rendementen)")
