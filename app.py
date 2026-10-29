@@ -185,29 +185,74 @@ def get_fcf(t):
     return None, "n/a"
 
 
+def get_trailing_eps(t):
+    """Winst per aandeel over de laatste 4 kwartalen (TTM). Geeft None als dat niet lukt."""
+    try:
+        q = t.quarterly_income_stmt
+        if q is not None and not q.empty and "Diluted EPS" in q.index:
+            last4 = q.loc["Diluted EPS"].iloc[:4]
+            if len(last4) == 4 and last4.notna().all():
+                return float(last4.sum())
+    except Exception as e:
+        logger.info("Kwartaalwinst niet beschikbaar: %s", e)
+    return None
+
+
+def get_info(t, ticker: str) -> dict:
+    """Haalt de 'info' op bij Yahoo. Yahoo blokkeert dit soms voor Streamlit Cloud
+    (te veel verzoeken); dan komt er {} terug."""
+    try:
+        return t.info or {}
+    except Exception as e:
+        logger.warning("Geen info voor %s: %s", ticker, e)
+        return {}
+
+
+def get_fast_info(t, ticker: str) -> dict:
+    """Reserveroute: koers, munt, beurswaarde en 52-weken via een ander Yahoo-adres."""
+    result = {}
+    try:
+        fi = t.fast_info
+    except Exception as e:
+        logger.info("Geen fast_info voor %s: %s", ticker, e)
+        return result
+    for key in ("last_price", "currency", "market_cap", "year_low", "year_high"):
+        try:
+            result[key] = fi[key]
+        except Exception as e:
+            logger.info("fast_info %s ontbreekt voor %s: %s", key, ticker, e)
+    return result
+
+
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
 def get_stock_info(ticker: str) -> dict:
     """Haalt alle gegevens van één aandeel op. Ontbrekende velden worden 'n/a'."""
     data = {"ticker": ticker}
     t = yf.Ticker(ticker)
-    try:
-        info = t.info or {}
-    except Exception as e:
-        logger.warning("Geen info voor %s: %s", ticker, e)
-        info = {}
+    info = get_info(t, ticker)
+    # Een echte info bevat een naam of koers; enkel 'trailingPegRatio' betekent: geblokkeerd.
+    data["info_ok"] = bool(info.get("longName") or info.get("shortName")
+                           or info.get("regularMarketPrice"))
+    fast = {} if data["info_ok"] else get_fast_info(t, ticker)
 
     data["name"] = info.get("longName") or info.get("shortName") or ticker
     data["sector"] = info.get("sector", "n/a")
     data["industry"] = info.get("industry", "n/a")
     data["summary"] = info.get("longBusinessSummary", "Geen beschrijving beschikbaar.")
-    data["price"] = to_number(info.get("currentPrice")) or to_number(info.get("regularMarketPrice"))
-    data["currency"] = info.get("currency", "")
-    data["market_cap"] = to_number(info.get("marketCap"))
+    data["price"] = (to_number(info.get("currentPrice")) or to_number(info.get("regularMarketPrice"))
+                     or to_number(fast.get("last_price")))
+    data["currency"] = info.get("currency") or fast.get("currency") or ""
+    data["market_cap"] = to_number(info.get("marketCap")) or to_number(fast.get("market_cap"))
     data["pe_trailing"] = to_number(info.get("trailingPE"))
+    if data["pe_trailing"] is None and data["price"]:
+        # Zelf berekenen: koers gedeeld door de winst per aandeel van de laatste 12 maanden.
+        eps = get_trailing_eps(t)
+        if eps and eps > 0:
+            data["pe_trailing"] = data["price"] / eps
     data["pe_forward"] = to_number(info.get("forwardPE"))
     data["peg_ratio"] = to_number(info.get("pegRatio")) or to_number(info.get("trailingPegRatio"))
-    data["52w_low"] = to_number(info.get("fiftyTwoWeekLow"))
-    data["52w_high"] = to_number(info.get("fiftyTwoWeekHigh"))
+    data["52w_low"] = to_number(info.get("fiftyTwoWeekLow")) or to_number(fast.get("year_low"))
+    data["52w_high"] = to_number(info.get("fiftyTwoWeekHigh")) or to_number(fast.get("year_high"))
     data["target_mean"] = to_number(info.get("targetMeanPrice"))
     data["target_low"] = to_number(info.get("targetLowPrice"))
     data["target_high"] = to_number(info.get("targetHighPrice"))
@@ -420,6 +465,18 @@ with st.spinner("Fetching data for all stocks... (may take a moment on first loa
 st.caption(f"Data via Yahoo Finance, opgehaald op {fetched_at} (Belgische tijd). "
            "Wordt elke 15 minuten vernieuwd. Koersen kunnen ~15 min vertraagd zijn.")
 
+blocked = int((~df["info_ok"]).sum()) if "info_ok" in df else 0
+if blocked:
+    st.warning(
+        f"Yahoo Finance gaf voor {blocked} van de {len(df)} aandelen niet alle gegevens "
+        "(Yahoo beperkt soms het aantal verzoeken). Koers, beurswaarde en P/E (trailing) "
+        "worden dan via een reserveroute opgehaald; forward P/E, koersdoelen en rating "
+        "blijven n/a. Probeer het over enkele minuten opnieuw."
+    )
+    if st.button("🔄 Opnieuw ophalen"):
+        st.cache_data.clear()
+        st.rerun()
+
 tab_overview, tab_detail, tab_corr = st.tabs(["📋 Overview", "🔍 Stock detail", "🔗 Correlation"])
 
 with tab_overview:
@@ -453,7 +510,7 @@ with tab_overview:
         if strong_buy_df.empty:
             st.write("No stocks with a 'Strong Buy' rating found in the current data.")
         else:
-            rows = strong_buy_df.drop(columns=["insider_transactions"], errors="ignore").to_dict("records")
+            rows = strong_buy_df.drop(columns=["insider_transactions", "info_ok"], errors="ignore").to_dict("records")
             with st.spinner(f"Claude is analyzing {len(rows)} Strong Buy stocks..."):
                 st.session_state["top_picks_text"] = get_top_picks(rows)
 
@@ -504,7 +561,7 @@ with tab_detail:
     st.caption("Generated by Claude based on the figures above. Not financial advice.")
     analysis_key = f"analysis_text_{ticker_choice}"
     if st.button("Generate AI analysis", key=f"analyse_{ticker_choice}"):
-        snapshot = {k: v for k, v in d.items() if k != "insider_transactions"}
+        snapshot = {k: v for k, v in d.items() if k not in ("insider_transactions", "info_ok")}
         with st.spinner("Claude is analyzing the figures..."):
             st.session_state[analysis_key] = get_claude_analysis(ticker_choice, snapshot)
 
