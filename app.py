@@ -439,10 +439,36 @@ def extract_text(response) -> str:
     return "⚠️ Claude gaf geen tekst terug. Probeer opnieuw."
 
 
+class ClaudeError(Exception):
+    """De AI-oproep mislukte. Fouten worden niet in de cache bewaard, zodat opnieuw proberen werkt."""
+
+
+def explain_claude_error(e: Exception) -> str:
+    """Zet een technische fout om in een begrijpelijke melding (zonder geheimen)."""
+    text = str(e).lower()
+    if isinstance(e, anthropic.AuthenticationError):
+        return ("De API-sleutel wordt geweigerd. Controleer ANTHROPIC_API_KEY bij Secrets: "
+                "is het de juiste, actieve sleutel van console.anthropic.com?")
+    if isinstance(e, anthropic.PermissionDeniedError):
+        return "Deze API-sleutel heeft geen toegang. Kijk op console.anthropic.com bij API Keys."
+    if isinstance(e, anthropic.NotFoundError):
+        return f"Het AI-model '{CLAUDE_MODEL}' werd niet gevonden voor jouw account."
+    if isinstance(e, anthropic.RateLimitError):
+        return "Te veel verzoeken of bestedingslimiet bereikt. Wacht even of verhoog je limiet."
+    if isinstance(e, anthropic.BadRequestError) and ("credit" in text or "billing" in text):
+        return ("Je API-tegoed is op. Voeg tegoed toe op console.anthropic.com bij Billing "
+                "(dit staat los van je claude.ai-abonnement).")
+    if isinstance(e, anthropic.APIConnectionError):
+        return "Geen verbinding met Anthropic. Probeer het over een minuut opnieuw."
+    if isinstance(e, anthropic.APIStatusError) and e.status_code >= 500:
+        return "Anthropic heeft een tijdelijke storing. Probeer het later opnieuw."
+    return f"Onverwachte fout ({type(e).__name__}). Details staan in het logboek."
+
+
 def ask_claude(prompt: str) -> str:
     client = get_claude_client()
     if client is None:
-        return "⚠️ Geen ANTHROPIC_API_KEY ingesteld bij Secrets. Zie de README."
+        raise ClaudeError("Geen ANTHROPIC_API_KEY ingesteld bij Secrets. Zie de README.")
     try:
         response = client.messages.create(
             model=CLAUDE_MODEL,
@@ -450,12 +476,19 @@ def ask_claude(prompt: str) -> str:
             thinking={"type": "disabled"},
             messages=[{"role": "user", "content": prompt}],
         )
-        return extract_text(response)
-    except Exception as e:
-        # Details enkel in het logboek, niet op het scherm.
+    except anthropic.AnthropicError as e:
+        # Volledige details enkel in het logboek; op het scherm een begrijpelijke melding.
         logger.error("Claude-oproep mislukt: %s", e)
-        return ("⚠️ De AI-analyse lukte niet. Kijk in Streamlit Cloud bij "
-                "Manage app -> logs voor de details.")
+        raise ClaudeError(explain_claude_error(e)) from e
+    return extract_text(response)
+
+
+def run_ai(func, *args) -> str:
+    """Roept een AI-functie op en zet een fout om in een melding op het scherm."""
+    try:
+        return func(*args)
+    except ClaudeError as e:
+        return f"⚠️ De AI-analyse lukte niet: {e}"
 
 
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
@@ -635,7 +668,7 @@ with tab_overview:
         else:
             rows = strong_buy_df.drop(columns=["insider_transactions", "info_ok", "analyst_source"], errors="ignore").to_dict("records")
             with st.spinner(f"Claude is analyzing {len(rows)} Strong Buy stocks..."):
-                st.session_state["top_picks_text"] = get_top_picks(rows)
+                st.session_state["top_picks_text"] = run_ai(get_top_picks, rows)
 
     if "top_picks_text" in st.session_state:
         st.markdown(st.session_state["top_picks_text"])
@@ -687,7 +720,7 @@ with tab_detail:
     if st.button("Generate AI analysis", key=f"analyse_{ticker_choice}"):
         snapshot = {k: v for k, v in d.items() if k not in ("insider_transactions", "info_ok", "analyst_source")}
         with st.spinner("Claude is analyzing the figures..."):
-            st.session_state[analysis_key] = get_claude_analysis(ticker_choice, snapshot)
+            st.session_state[analysis_key] = run_ai(get_claude_analysis, ticker_choice, snapshot)
 
     if analysis_key in st.session_state:
         st.markdown(st.session_state[analysis_key])
