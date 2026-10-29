@@ -473,7 +473,8 @@ def ask_claude(prompt: str) -> str:
         response = client.messages.create(
             model=CLAUDE_MODEL,
             max_tokens=2048,
-            thinking={"type": "disabled"},
+            # Dit model denkt niet vooraf na met "between_tools" (= geen extra denkwerk, sneller en goedkoper).
+            thinking={"type": "between_tools"},
             messages=[{"role": "user", "content": prompt}],
         )
     except anthropic.AnthropicError as e:
