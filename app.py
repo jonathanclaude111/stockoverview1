@@ -11,6 +11,8 @@ Lokaal draaien:
 Nodige "Secrets" in Streamlit Cloud (Manage app -> Settings -> Secrets):
     APP_PASSWORD = "een-lang-wachtwoord"
     ANTHROPIC_API_KEY = "sk-ant-..."   (optioneel, enkel voor de AI-knoppen)
+    FMP_API_KEY = "..."                (optioneel, reservebron koersdoelen en forward P/E)
+    FINNHUB_API_KEY = "..."            (optioneel, reservebron rating)
 """
 
 import hmac
@@ -25,6 +27,7 @@ from zoneinfo import ZoneInfo
 import anthropic
 import numpy as np
 import pandas as pd
+import requests
 import streamlit as st
 import yfinance as yf
 
@@ -37,6 +40,7 @@ logger = logging.getLogger("stock_dashboard")
 CLAUDE_MODEL = "claude-sonnet-5-5"
 TICKERS_FILE = os.path.join(os.path.dirname(__file__), "tickers.json")
 CACHE_TTL = 15 * 60  # 15 minuten
+ANALYST_CACHE_TTL = 24 * 60 * 60  # analistendata verandert traag: 1 dag bewaren
 BRUSSELS = ZoneInfo("Europe/Brussels")
 MAX_TICKERS = 100
 # Een ticker mag enkel letters, cijfers, punt, streepje, ^ of = bevatten (max 15 tekens).
@@ -224,6 +228,121 @@ def get_fast_info(t, ticker: str) -> dict:
     return result
 
 
+# ----------------------- Reservebronnen voor analistendata -----------------------
+# Enkel actief als de sleutel bij Secrets staat (FMP_API_KEY / FINNHUB_API_KEY).
+
+class SourceError(Exception):
+    """Een reservebron gaf een fout. Fouten worden niet in de cache bewaard."""
+
+
+def fetch_json(url: str, params: dict, source: str):
+    """Vraagt JSON op bij een externe bron. Geeft SourceError bij een fout.
+    De sleutel zit in params en komt nooit in het logboek."""
+    try:
+        r = requests.get(url, params=params, timeout=10)
+    except requests.RequestException as e:
+        raise SourceError(f"{source} niet bereikbaar: {type(e).__name__}") from e
+    if r.status_code != 200:
+        raise SourceError(f"{source} gaf status {r.status_code} voor {params.get('symbol')}")
+    try:
+        return r.json()
+    except ValueError as e:
+        raise SourceError(f"{source} gaf geen geldige JSON") from e
+
+
+@st.cache_data(ttl=ANALYST_CACHE_TTL, show_spinner=False)
+def get_fmp_targets(ticker: str) -> dict:
+    """Koersdoelen (gemiddeld/laag/hoog) via Financial Modeling Prep."""
+    key = get_secret("FMP_API_KEY")
+    if not key:
+        return {}
+    data = fetch_json("https://financialmodelingprep.com/stable/price-target-consensus",
+                      {"symbol": ticker, "apikey": key}, "FMP")
+    if isinstance(data, list) and data and isinstance(data[0], dict):
+        row = data[0]
+        return {"target_mean": to_number(row.get("targetConsensus")),
+                "target_low": to_number(row.get("targetLow")),
+                "target_high": to_number(row.get("targetHigh"))}
+    return {}
+
+
+@st.cache_data(ttl=ANALYST_CACHE_TTL, show_spinner=False)
+def get_fmp_forward_eps(ticker: str):
+    """Verwachte winst per aandeel voor het eerstvolgende boekjaar via FMP."""
+    key = get_secret("FMP_API_KEY")
+    if not key:
+        return None
+    data = fetch_json("https://financialmodelingprep.com/stable/analyst-estimates",
+                      {"symbol": ticker, "period": "annual", "apikey": key}, "FMP")
+    if not isinstance(data, list):
+        return None
+    today = datetime.now(BRUSSELS).strftime("%Y-%m-%d")
+    future = [row for row in data if isinstance(row, dict)
+              and str(row.get("date", "")) >= today and to_number(row.get("epsAvg")) is not None]
+    if not future:
+        return None
+    nearest = min(future, key=lambda row: str(row["date"]))
+    return to_number(nearest["epsAvg"])
+
+
+@st.cache_data(ttl=ANALYST_CACHE_TTL, show_spinner=False)
+def get_finnhub_rating(ticker: str) -> dict:
+    """Analistenrating via Finnhub (aantal Strong Buy / Buy / Hold / Sell / Strong Sell)."""
+    key = get_secret("FINNHUB_API_KEY")
+    if not key:
+        return {}
+    data = fetch_json("https://finnhub.io/api/v1/stock/recommendation",
+                      {"symbol": ticker, "token": key}, "Finnhub")
+    if not isinstance(data, list) or not data or not isinstance(data[0], dict):
+        return {}
+    latest = data[0]  # Finnhub zet de meest recente maand eerst
+    counts = [to_number(latest.get(k)) or 0 for k in
+              ("strongBuy", "buy", "hold", "sell", "strongSell")]
+    total = sum(counts)
+    if total == 0:
+        return {}
+    # Gemiddelde score zoals Yahoo: 1 = Strong Buy ... 5 = Strong Sell.
+    score = sum((i + 1) * c for i, c in enumerate(counts)) / total
+    if score <= 1.5:
+        rec = "strong_buy"
+    elif score <= 2.5:
+        rec = "buy"
+    elif score <= 3.5:
+        rec = "hold"
+    elif score <= 4.5:
+        rec = "underperform"
+    else:
+        rec = "sell"
+    return {"recommendation": rec, "num_analysts": total}
+
+
+def fill_analyst_gaps(data: dict) -> None:
+    """Vult ontbrekende koersdoelen, forward P/E en rating aan uit de reservebronnen."""
+    sources = []
+    try:
+        if data["target_mean"] is None:
+            targets = get_fmp_targets(data["ticker"])
+            if targets.get("target_mean") is not None:
+                data.update(targets)
+                sources.append("koersdoelen: FMP")
+        if data["pe_forward"] is None and data["price"]:
+            eps = get_fmp_forward_eps(data["ticker"])
+            if eps and eps > 0:
+                data["pe_forward"] = data["price"] / eps
+                sources.append("forward P/E: FMP")
+    except SourceError as e:
+        logger.warning("%s", e)
+    try:
+        if data["recommendation"] in (None, "n/a", "none"):
+            rating = get_finnhub_rating(data["ticker"])
+            if rating:
+                data.update(rating)
+                sources.append("rating: Finnhub")
+    except SourceError as e:
+        logger.warning("%s", e)
+    data["analyst_source"] = ", ".join(sources) if sources else "Yahoo"
+
+
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
 def get_stock_info(ticker: str) -> dict:
     """Haalt alle gegevens van één aandeel op. Ontbrekende velden worden 'n/a'."""
@@ -258,6 +377,7 @@ def get_stock_info(ticker: str) -> dict:
     data["target_high"] = to_number(info.get("targetHighPrice"))
     data["recommendation"] = info.get("recommendationKey", "n/a")
     data["num_analysts"] = to_number(info.get("numberOfAnalystOpinions"))
+    fill_analyst_gaps(data)
 
     data["fcf"], data["fcf_source"] = get_fcf(t)
 
@@ -470,11 +590,14 @@ if blocked:
     st.warning(
         f"Yahoo Finance gaf voor {blocked} van de {len(df)} aandelen niet alle gegevens "
         "(Yahoo beperkt soms het aantal verzoeken). Koers, beurswaarde en P/E (trailing) "
-        "worden dan via een reserveroute opgehaald; forward P/E, koersdoelen en rating "
-        "blijven n/a. Probeer het over enkele minuten opnieuw."
+        "worden dan via een reserveroute opgehaald. Forward P/E, koersdoelen en rating "
+        "komen uit FMP en Finnhub als je die sleutels bij Secrets hebt ingesteld, anders "
+        "blijven ze n/a. Probeer het over enkele minuten opnieuw."
     )
     if st.button("🔄 Opnieuw ophalen"):
-        st.cache_data.clear()
+        # Enkel Yahoo opnieuw; de reservebronnen hebben een daglimiet.
+        get_stock_info.clear()
+        get_all_stocks.clear()
         st.rerun()
 
 tab_overview, tab_detail, tab_corr = st.tabs(["📋 Overview", "🔍 Stock detail", "🔗 Correlation"])
@@ -510,7 +633,7 @@ with tab_overview:
         if strong_buy_df.empty:
             st.write("No stocks with a 'Strong Buy' rating found in the current data.")
         else:
-            rows = strong_buy_df.drop(columns=["insider_transactions", "info_ok"], errors="ignore").to_dict("records")
+            rows = strong_buy_df.drop(columns=["insider_transactions", "info_ok", "analyst_source"], errors="ignore").to_dict("records")
             with st.spinner(f"Claude is analyzing {len(rows)} Strong Buy stocks..."):
                 st.session_state["top_picks_text"] = get_top_picks(rows)
 
@@ -549,6 +672,7 @@ with tab_detail:
         f"Average: {fmt_num(d['target_mean'])} — Low: {fmt_num(d['target_low'])} — "
         f"High: {fmt_num(d['target_high'])} (based on {analysts} analysts)"
     )
+    st.caption(f"Bron analistendata: {d['analyst_source']}")
 
     st.markdown("**Recent insider transactions:**")
     if d["insider_transactions"] is not None and not d["insider_transactions"].empty:
@@ -561,7 +685,7 @@ with tab_detail:
     st.caption("Generated by Claude based on the figures above. Not financial advice.")
     analysis_key = f"analysis_text_{ticker_choice}"
     if st.button("Generate AI analysis", key=f"analyse_{ticker_choice}"):
-        snapshot = {k: v for k, v in d.items() if k not in ("insider_transactions", "info_ok")}
+        snapshot = {k: v for k, v in d.items() if k not in ("insider_transactions", "info_ok", "analyst_source")}
         with st.spinner("Claude is analyzing the figures..."):
             st.session_state[analysis_key] = get_claude_analysis(ticker_choice, snapshot)
 
