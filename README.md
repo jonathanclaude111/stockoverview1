@@ -31,6 +31,19 @@ APP_PASSWORD = "a-long-password-of-at-least-12-characters"
 Set the password first, before deploying a new version. There is no limit on login
 attempts, so use a long password and set a monthly spend limit in the Anthropic console.
 
+## Backup sources for analyst data (optional, free)
+
+When Yahoo blocks the app, forward P/E, price targets and rating stay n/a. Two free
+services can fill those gaps. Create a free account, copy the API key, and add it to Secrets:
+
+```
+FMP_API_KEY = "..."        # https://site.financialmodelingprep.com -> price targets, forward P/E
+FINNHUB_API_KEY = "..."    # https://finnhub.io -> analyst rating
+```
+
+Results are kept for one day to stay within the free daily limits. The stock detail tab
+shows which source was used. Free plans may not cover every ticker (mainly US stocks).
+
 ## Stock list
 
 Tickers added or removed via the sidebar are lost whenever Streamlit Cloud restarts
