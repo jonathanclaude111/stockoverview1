@@ -17,7 +17,24 @@ Then open the link shown in your terminal (usually `http://localhost:8501`).
 1. Create a free account at https://share.streamlit.io (sign in with GitHub)
 2. Put this folder (`app.py` + `requirements.txt`) in a new GitHub repository
 3. Click "New app" in Streamlit Cloud, pick your repository and `app.py` as the main file
-4. Done — you'll get a public URL you can visit and share
+4. Done — you'll get a URL you can visit
+
+## Password (required)
+
+The whole app sits behind a password. Without one, the app stays locked and shows
+"Geen wachtwoord ingesteld". In Streamlit Cloud: "Manage app" -> Settings -> Secrets, add:
+
+```
+APP_PASSWORD = "a-long-password-of-at-least-12-characters"
+```
+
+Set the password first, before deploying a new version. There is no limit on login
+attempts, so use a long password and set a monthly spend limit in the Anthropic console.
+
+## Stock list
+
+Tickers added or removed via the sidebar are lost whenever Streamlit Cloud restarts
+(including after every commit). For permanent changes, edit `DEFAULT_TICKERS` in `app.py`.
 
 ## AI analysis (optional, via Claude API)
 
@@ -25,11 +42,12 @@ The app can generate an AI-written interpretation and buy-worthiness assessment 
 plus a "Top 3 Strong Buy" comparison, using the Anthropic API. To enable this:
 
 1. Create an account at https://console.anthropic.com and generate an API key
-2. In Streamlit Cloud: "Manage app" -> Settings -> Secrets, add:
+2. In Streamlit Cloud: "Manage app" -> Settings -> Secrets, add (next to `APP_PASSWORD`):
    ```
    ANTHROPIC_API_KEY = "sk-ant-your-key-here"
    ```
-3. Never commit your API key to GitHub or put it directly in app.py
+3. Never commit your API key or password to GitHub or put them directly in app.py
+4. Set a monthly spend limit at https://console.anthropic.com (Settings -> Limits)
 
 Note: this uses paid API credits (typically a few cents per generated analysis) - separate
 from your regular claude.ai subscription.
